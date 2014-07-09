@@ -18,14 +18,9 @@
  */
 package org.apache.cordova;
 
-import java.io.IOException;
-import java.util.ArrayList;
 import java.util.HashMap;
-import java.util.Iterator;
 import java.util.List;
-import java.util.concurrent.atomic.AtomicInteger;
 
-import org.apache.cordova.CordovaArgs;
 import org.apache.cordova.CordovaWebView;
 import org.apache.cordova.CallbackContext;
 import org.apache.cordova.CordovaInterface;
@@ -33,11 +28,8 @@ import org.apache.cordova.CordovaPlugin;
 import org.apache.cordova.PluginEntry;
 import org.apache.cordova.PluginResult;
 import org.json.JSONException;
-import org.xmlpull.v1.XmlPullParserException;
 
 import android.content.Intent;
-import android.content.res.XmlResourceParser;
-
 import android.net.Uri;
 import android.os.Debug;
 import android.util.Log;
@@ -58,26 +50,35 @@ public class PluginManager {
     private final CordovaInterface ctx;
     private final CordovaWebView app;
 
-    // Flag to track first time through
-    private boolean firstRun;
-
     // Stores mapping of Plugin Name -> <url-filter> values.
     // Using <url-filter> is deprecated.
     protected HashMap<String, List<String>> urlMap = new HashMap<String, List<String>>();
 
-    private AtomicInteger numPendingUiExecs;
+    @Deprecated
+    PluginManager(CordovaWebView cordovaWebView, CordovaInterface cordova) {
+        this(cordovaWebView, cordova, null);
+    }
 
-    /**
-     * Constructor.
-     *
-     * @param app
-     * @param ctx
-     */
-    public PluginManager(CordovaWebView app, CordovaInterface ctx) {
-        this.ctx = ctx;
-        this.app = app;
-        this.firstRun = true;
-        this.numPendingUiExecs = new AtomicInteger(0);
+    PluginManager(CordovaWebView cordovaWebView, CordovaInterface cordova, List<PluginEntry> pluginEntries) {
+        this.ctx = cordova;
+        this.app = cordovaWebView;
+        if (pluginEntries == null) {
+            ConfigXmlParser parser = new ConfigXmlParser();
+            parser.parse(ctx.getActivity());
+            pluginEntries = parser.getPluginEntries();
+        }
+        setPluginEntries(pluginEntries);
+    }
+
+    public void setPluginEntries(List<PluginEntry> pluginEntries) {
+        this.onPause(false);
+        this.onDestroy();
+        this.clearPluginObjects();
+        entries.clear();
+        urlMap.clear();
+        for (PluginEntry entry : pluginEntries) {
+            addService(entry);
+        }
     }
 
     /**
@@ -85,96 +86,14 @@ public class PluginManager {
      */
     public void init() {
         LOG.d(TAG, "init()");
-
-        // If first time, then load plugins from config.xml file
-        if (this.firstRun) {
-            this.loadPlugins();
-            this.firstRun = false;
-        }
-
-        // Stop plugins on current HTML page and discard plugin objects
-        else {
-            this.onPause(false);
-            this.onDestroy();
-            this.clearPluginObjects();
-        }
-
-        // Insert PluginManager service
-        this.addService(new PluginEntry("PluginManager", new PluginManagerService()));
-
-        // Start up all plugins that have onload specified
+        this.onPause(false);
+        this.onDestroy();
+        this.clearPluginObjects();
         this.startupPlugins();
     }
 
-    /**
-     * Load plugins from res/xml/config.xml
-     */
+    @Deprecated
     public void loadPlugins() {
-        // First checking the class namespace for config.xml
-        int id = this.ctx.getActivity().getResources().getIdentifier("config", "xml", this.ctx.getActivity().getClass().getPackage().getName());
-        if (id == 0) {
-            // If we couldn't find config.xml there, we'll look in the namespace from AndroidManifest.xml
-            id = this.ctx.getActivity().getResources().getIdentifier("config", "xml", this.ctx.getActivity().getPackageName());
-            if (id == 0) {
-                this.pluginConfigurationMissing();
-                //We have the error, we need to exit without crashing!
-                return;
-            }
-        }
-        XmlResourceParser xml = this.ctx.getActivity().getResources().getXml(id);
-        int eventType = -1;
-        String service = "", pluginClass = "", paramType = "";
-        boolean onload = false;
-        boolean insideFeature = false;
-        while (eventType != XmlResourceParser.END_DOCUMENT) {
-            if (eventType == XmlResourceParser.START_TAG) {
-                String strNode = xml.getName();
-                if (strNode.equals("url-filter")) {
-                    Log.w(TAG, "Plugin " + service + " is using deprecated tag <url-filter>");
-                    if (urlMap.get(service) == null) {
-                        urlMap.put(service, new ArrayList<String>(2));
-                    }
-                    List<String> filters = urlMap.get(service);
-                    filters.add(xml.getAttributeValue(null, "value"));
-                }
-                else if (strNode.equals("feature")) {
-                    //Check for supported feature sets  aka. plugins (Accelerometer, Geolocation, etc)
-                    //Set the bit for reading params
-                    insideFeature = true;
-                    service = xml.getAttributeValue(null, "name");
-                }
-                else if (insideFeature && strNode.equals("param")) {
-                    paramType = xml.getAttributeValue(null, "name");
-                    if (paramType.equals("service")) // check if it is using the older service param
-                        service = xml.getAttributeValue(null, "value");
-                    else if (paramType.equals("package") || paramType.equals("android-package"))
-                        pluginClass = xml.getAttributeValue(null,"value");
-                    else if (paramType.equals("onload"))
-                        onload = "true".equals(xml.getAttributeValue(null, "value"));
-                }
-            }
-            else if (eventType == XmlResourceParser.END_TAG)
-            {
-                String strNode = xml.getName();
-                if (strNode.equals("feature") || strNode.equals("plugin"))
-                {
-                    PluginEntry entry = new PluginEntry(service, pluginClass, onload);
-                    this.addService(entry);
-
-                    //Empty the strings to prevent plugin loading bugs
-                    service = "";
-                    pluginClass = "";
-                    insideFeature = false;
-                }
-            }
-            try {
-                eventType = xml.next();
-            } catch (XmlPullParserException e) {
-                e.printStackTrace();
-            } catch (IOException e) {
-                e.printStackTrace();
-            }
-        }
     }
 
     /**
@@ -215,20 +134,6 @@ public class PluginManager {
      *                      plugin execute method.
      */
     public void exec(final String service, final String action, final String callbackId, final String rawArgs) {
-        if (numPendingUiExecs.get() > 0) {
-            numPendingUiExecs.getAndIncrement();
-            this.ctx.getActivity().runOnUiThread(new Runnable() {
-                public void run() {
-                    execHelper(service, action, callbackId, rawArgs);
-                    numPendingUiExecs.getAndDecrement();
-                }
-            });
-        } else {
-            execHelper(service, action, callbackId, rawArgs);
-        }
-    }
-
-    private void execHelper(final String service, final String action, final String callbackId, final String rawArgs) {
         CordovaPlugin plugin = getPlugin(service);
         if (plugin == null) {
             Log.d(TAG, "exec() call to unknown plugin: " + service);
@@ -236,22 +141,25 @@ public class PluginManager {
             app.sendPluginResult(cr, callbackId);
             return;
         }
+        CallbackContext callbackContext = new CallbackContext(callbackId, app);
         try {
-            CallbackContext callbackContext = new CallbackContext(callbackId, app);
             long pluginStartTime = System.currentTimeMillis();
             boolean wasValidAction = plugin.execute(action, rawArgs, callbackContext);
             long duration = System.currentTimeMillis() - pluginStartTime;
-            
+
             if (duration > SLOW_EXEC_WARNING_THRESHOLD) {
                 Log.w(TAG, "THREAD WARNING: exec() call to " + service + "." + action + " blocked the main thread for " + duration + "ms. Plugin should use CordovaInterface.getThreadPool().");
             }
             if (!wasValidAction) {
                 PluginResult cr = new PluginResult(PluginResult.Status.INVALID_ACTION);
-                app.sendPluginResult(cr, callbackId);
+                callbackContext.sendPluginResult(cr);
             }
         } catch (JSONException e) {
             PluginResult cr = new PluginResult(PluginResult.Status.JSON_EXCEPTION);
-            app.sendPluginResult(cr, callbackId);
+            callbackContext.sendPluginResult(cr);
+        } catch (Exception e) {
+            Log.e(TAG, "Uncaught exception from plugin", e);
+            callbackContext.error(e.getMessage());
         }
     }
 
@@ -300,6 +208,10 @@ public class PluginManager {
      */
     public void addService(PluginEntry entry) {
         this.entries.put(entry.service, entry);
+        List<String> urlFilters = entry.getUrlFilters();
+        if (urlFilters != null) {
+            urlMap.put(entry.service, urlFilters);
+        }
     }
 
     /**
@@ -405,21 +317,11 @@ public class PluginManager {
      * Called when the app navigates or refreshes.
      */
     public void onReset() {
-        Iterator<PluginEntry> it = this.entries.values().iterator();
-        while (it.hasNext()) {
-            CordovaPlugin plugin = it.next().plugin;
-            if (plugin != null) {
-                plugin.onReset();
+        for (PluginEntry entry : this.entries.values()) {
+            if (entry.plugin != null) {
+                entry.plugin.onReset();
             }
         }
-    }
-
-
-    private void pluginConfigurationMissing() {
-        LOG.e(TAG, "=====================================================================================");
-        LOG.e(TAG, "ERROR: config.xml is missing.  Add res/xml/config.xml to your project.");
-        LOG.e(TAG, "https://git-wip-us.apache.org/repos/asf?p=cordova-android.git;a=blob;f=framework/res/xml/config.xml");
-        LOG.e(TAG, "=====================================================================================");
     }
 
     Uri remapUri(Uri uri) {
@@ -432,27 +334,5 @@ public class PluginManager {
             }
         }
         return null;
-    }
-
-    private class PluginManagerService extends CordovaPlugin {
-        @Override
-        public boolean execute(String action, CordovaArgs args, final CallbackContext callbackContext) throws JSONException {
-            if ("startup".equals(action)) {
-                // The onPageStarted event of CordovaWebViewClient resets the queue of messages to be returned to javascript in response
-                // to exec calls. Since this event occurs on the UI thread and exec calls happen on the WebCore thread it is possible
-                // that onPageStarted occurs after exec calls have started happening on a new page, which can cause the message queue
-                // to be reset between the queuing of a new message and its retrieval by javascript. To avoid this from happening,
-                // javascript always sends a "startup" exec upon loading a new page which causes all future exec calls to happen on the UI
-                // thread (and hence after onPageStarted) until there are no more pending exec calls remaining.
-                numPendingUiExecs.getAndIncrement();
-                ctx.getActivity().runOnUiThread(new Runnable() {
-                    public void run() {
-                        numPendingUiExecs.getAndDecrement();
-                    }
-                });
-                return true;
-            }
-            return false;
-        }
     }
 }
